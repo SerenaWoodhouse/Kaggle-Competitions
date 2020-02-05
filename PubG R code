@@ -1,0 +1,194 @@
+
+
+setwd("~/Downloads")
+install.packages("caret", dependencies = TRUE)
+library(caret)
+install.packages("iterators")
+install.packages("Rcpp")
+library(Rcpp)
+install.packages('tree')
+library(tree)
+install.packages('randomForest')
+library(randomForest)
+install.packages("ggplot")
+library(ggplot)
+install.packages("data.table")
+library(data.table)
+install.packages("dplyr")
+library(dplyr)
+
+library(data.table)
+df <- fread("train_V2.csv", stringsAsFactors = FALSE)
+df <- df[complete.cases(df),]
+
+#separate into solo and group
+mtype <- grepl("solo", df$matchType)
+solo <- df[mtype,]
+squad <- df[!mtype,]
+
+
+
+#use sample of 1000 of solo matchs
+match_list_s <- unique(solo$matchId)
+s.sample <- sample(match_list_s, 100, replace = FALSE)
+s.sample <- solo[solo$matchId %in% s.sample,]
+
+
+
+#take out unhelpful variables
+s.sample <- subset(s.sample, select = -c(Id, groupId, matchId,
+                                         assists, DBNOs, matchType, numGroups,
+                                         revives, rideDistance, roadKills, 
+                                         swimDistance, teamKills, vehicleDestroys, 
+                                         heals, rankPoints, headshotKills, 
+                                         killStreaks, weaponsAcquired))
+
+#5-fold cross validation
+train_control_s <- trainControl(method="cv", number=5, savePredictions = TRUE)
+
+
+library(caret)
+#linear model
+L.model <- train(winPlacePerc ~., data=s.sample, trControl=train_control_s, 
+                 method = "glm")
+L.model
+
+#RMSE       Rsquared   MAE       
+#0.1307741  0.8092302  0.09939706
+
+
+#random forest model
+model.RFs <- train(winPlacePerc ~., data=s.sample, method="rf", 
+                  ntree = 25, trControl = train_control_s, importance=TRUE)
+
+model.RFs
+#mtry  RMSE        Rsquared   MAE       
+#2    0.08195425  0.9272019  0.05848631
+#6    0.07759639  0.9328992  0.05078512
+#10    0.08008784  0.9284727  0.05180026
+
+#take sample of group matches
+match_list_g <- unique(squad$matchId)
+g.sample <- sample(match_list_g, 100, replace = FALSE)
+g.sample <- squad[squad$matchId %in% g.sample,]
+g.sample <- subset(g.sample, select = -groupId)
+
+
+library(dplyr)
+
+mutate_g <- g.sample %>%
+  group_by(matchId) %>%
+  mutate(rank_killPoints = rank(killPoints),
+         rank_walkDistance = rank(walkDistance),
+         rank_killStreaks = rank(killStreaks),
+         rank_revives = rank(revives),
+         rank_assists = rank(assists),
+         rank_boosts = rank(boosts),
+         rank_damageDealt = rank(damageDealt),
+         rank_heals = rank(heals),
+         max_dist = max(walkDistance),
+         max_assists = max(assists),
+         max_boosts = max(boosts),
+         max_damageDealt = max(damageDealt),
+         max_kp = max(killPlace),
+         max_ks = max(killStreaks),
+         avg_killPoints = mean(killPoints),
+         avg_walkDistance = mean(walkDistance),
+         avg_revives = mean(revives),
+         avg_assists = mean(assists),
+         avg_boosts = mean(boosts),
+         damgedealt_killPoints = damageDealt*killPlace,
+         swimwalkdist = swimDistance*walkDistance,
+         damage_walk = damageDealt*walkDistance,
+         killstreak_walk = killStreaks*walkDistance,
+         boosts_damage = damageDealt*boosts)
+
+mutate_g <- mutate_g %>%
+  mutate(avg_rvivs_dist = avg_revives / max_dist,
+         max_dmg_dist = max_damageDealt / max_dist,
+         avg_klpnt_dist = avg_killPoints / max_dist,
+         max_ks_dist = max_ks / max_dist,
+         max_dmgdlt_ks = max_damageDealt / max_ks,
+         rk_dmgdlt_dist = rank_damageDealt / max_dist)
+
+
+
+#linear model
+mutate_g$matchType <- as.factor(mutate_g$matchType)
+mutate_g <- subset(mutate_g, select = -c(Id, matchId))
+L.model <- train(winPlacePerc ~., data=mutate_g, method = "lm")
+
+#random forest model
+model.RFg <- train(winPlacePerc ~., data=s.sample, method="rf", 
+                  ntree = 5, trControl = train_control_s, importance=TRUE)
+
+
+
+#fit testing set to model
+test <- fread("test_V2.csv", stringsAsFactors = FALSE)
+test <- test[complete.cases(test),]
+
+#separate into solo and group
+mtype <- grepl("solo", test$matchType)
+solo.t <- test[mtype,]
+group.t <- test[!mtype,]
+
+
+#take out unhelpful variables
+solo.t <- subset(solo.t, select = -c(groupId, matchId,
+                                         assists, DBNOs, matchType, numGroups,
+                                         revives, rideDistance, roadKills, 
+                                         swimDistance, teamKills, vehicleDestroys, 
+                                         heals, rankPoints, headshotKills, 
+                                         killStreaks, weaponsAcquired))
+
+
+
+#predict solo test on Random forest
+solofinal <- predict(model.RFs, newdata=solo.t)
+
+
+#clean group test data
+mutate_g.t <- group.t %>%
+  group_by(matchId) %>%
+  mutate(rank_killPoints = rank(killPoints),
+         rank_walkDistance = rank(walkDistance),
+         rank_killStreaks = rank(killStreaks),
+         rank_revives = rank(revives),
+         rank_assists = rank(assists),
+         rank_boosts = rank(boosts),
+         rank_damageDealt = rank(damageDealt),
+         rank_heals = rank(heals),
+         max_dist = max(walkDistance),
+         max_assists = max(assists),
+         max_boosts = max(boosts),
+         max_damageDealt = max(damageDealt),
+         max_kp = max(killPlace),
+         max_ks = max(killStreaks),
+         avg_killPoints = mean(killPoints),
+         avg_walkDistance = mean(walkDistance),
+         avg_revives = mean(revives),
+         avg_assists = mean(assists),
+         avg_boosts = mean(boosts),
+         damgedealt_killPoints = damageDealt*killPlace,
+         swimwalkdist = swimDistance*walkDistance,
+         damage_walk = damageDealt*walkDistance,
+         killstreak_walk = killStreaks*walkDistance,
+         boosts_damage = damageDealt*boosts)
+
+mutate_g.t <- mutate_g.t %>%
+  mutate(avg_rvivs_dist = avg_revives / max_dist,
+         max_dmg_dist = max_damageDealt / max_dist,
+         avg_klpnt_dist = avg_killPoints / max_dist,
+         max_ks_dist = max_ks / max_dist,
+         max_dmgdlt_ks = max_damageDealt / max_ks,
+         rk_dmgdlt_dist = rank_damageDealt / max_dist)
+
+#predict test group random forest
+groupfinal <- predict(model.RFg, newdata=group.t)
+
+#Format to submit in kaggle
+g <- data.frame("Id" = group.t$Id, "winPlacePerc" = groupfinal)
+s <- data.frame("Id" = solo.t$Id, "winPlacePerc" = solofinal)
+final <- rbind(g,s)
+write.csv(final, "submission.csv", row.names = FALSE)
