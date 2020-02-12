@@ -1,0 +1,284 @@
+setwd("~/Downloads")
+install.packages("ggplot2")
+install.packages("dplyr")
+install.packages("caret", dependencies = TRUE)
+install.packages("data.table")
+install.packages("corrplot")
+install.packages("randomForest")
+install.packages("gbm")
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(data.table)
+library(corrplot)
+library(randomForest)
+library(gbm)
+library(caret)
+library(xgboost)
+
+#read in testing and training sets
+train <- read.csv("train.csv", stringsAsFactors = FALSE)
+summary(train)
+test <- read.csv("test.csv", stringsAsFactors =  FALSE)
+
+#get rid of IDs and store test IDs
+test_ID <- test$Id
+
+#combine test and train for cleaning the data
+test$SalePrice <- NA
+df <- rbind(train, test)
+
+#log Sale price to deal with skewness
+df$SalePrice <- as.numeric(df$SalePrice)
+str(df$SalePrice)
+df$SalePrice <- log(df$SalePrice)
+
+
+#input value for missing data
+is.na(df)
+df[is.na(df)] <- 'None'
+str(df)
+
+
+#make quality vairables numeric
+library(dplyr)
+##Fireplace
+df$FireplaceQu <- recode(df$FireplaceQu, 'None' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+table(df$FireplaceQu)
+##paved 
+df$PavedDrive <- recode(df$PavedDrive, 'N'=0, 'P'=1, 'Y'=2)
+
+
+#factor character varaibles
+#Foundation
+df$Foundation <- as.factor(df$Foundation)
+table(df$Foundation)
+#Misc Features
+df$MiscFeature <- as.factor(df$MiscFeature)
+table(df$MiscFeature)
+#Alley
+df$Alley <- as.factor(df$Alley)
+#Fence
+df$Fence <- as.factor(df$Fence)
+#LotConfig
+df$LotConfig <- as.factor(df$LotConfig)
+#Exterior Condition
+df$ExterCond <- as.factor(df$ExterCond)
+#salecondition
+df$SaleCondition <- as.factor(df$SaleCondition)
+#garage type
+df$GarageType <- as.factor(df$GarageType)
+#garage finish
+df$GarageFinish <- as.factor(df$GarageFinish)
+#garage quality
+df$GarageQual <- as.factor(df$GarageQual)
+#garage area
+df$GarageArea <- as.factor(df$GarageArea)
+#Basement quality
+df$BsmtQual <- as.factor(df$BsmtQual)
+#bsmt sq ft
+df$TotalBsmtSF <- as.factor(df$TotalBsmtSF)
+#Heating
+df$Heating <- as.factor(df$Heating)
+#centralair
+df$CentralAir <- as.factor(df$CentralAir)
+#Kitchen quality
+df$KitchenQual <- as.factor(df$KitchenQual)
+#garage area
+df$GarageArea <- as.numeric(df$GarageArea)
+#paved drive
+df$PavedDrive <- as.factor(df$PavedDrive)
+#sale type
+df$SaleType <- as.factor(df$SaleType)
+#sale price
+df$SalePrice <- as.numeric(df$SalePrice)
+
+#take out uneccesary variables
+df <- subset(df, select=-c(GarageCond, MSZoning, LotFrontage, Street, LotConfig,
+                           Neighborhood, Condition1, Condition2, BldgType, HouseStyle,
+                           RoofStyle, RoofMatl, Exterior1st, Exterior2nd, MasVnrType,
+                           MasVnrArea, ExterQual, BsmtCond, BsmtExposure,
+                           BsmtFinType1, BsmtFinSF1, BsmtFinType2, BsmtFinSF2,
+                           BsmtUnfSF, HeatingQC, Electrical, BsmtFullBath,
+                           BsmtHalfBath, Functional, GarageYrBlt, GarageCars,
+                           GarageCond, SaleCondition, LandSlope, Utilities,
+                           LandContour, LotShape, GarageFinish, GarageQual,
+                           GrLivArea, PoolQC, ExterCond))
+
+
+#set variables to numeric
+df$TotalBsmtSF <- as.numeric(as.character(df$TotalBsmtSF))
+df$SalePrice <- as.numeric(df$SalePrice)
+str(df)
+
+#find NAs
+df[is.na(df)] <- 'None'
+sapply(df, function(x) sum(is.na(x)))
+
+
+## Function to convert small factors into "other"
+# However, if there is only one small factor, it won't be
+# corrected. You would need to fix that by hand.
+## Second function combines smallest values into largest
+# values
+
+#Take small groups of factors and classify as "other" if groups are
+#smaller than threshold
+CombineLowNum <- function(df, threshold) {
+  factor_columns <- unlist(lapply(df, is.factor))
+  df1 <- df[,factor_columns]
+  df1 <- data.frame(lapply(df1, as.character), stringsAsFactors = F)
+  for (i in 1:ncol(df1)) {
+    tbl <- table(df1[,i])
+    leave <- tbl[tbl < threshold]
+    df1[df1[[i]] %in% names(leave),i] <- "other"
+  }
+  df1 <- data.frame(lapply(df1, as.factor), stringsAsFactors = F)
+  df2 <- cbind(df[,!factor_columns], df1)
+  return(df2)
+}
+
+#Take groups of other and turn them into the max value in row if the
+#number of data points in a group is less than threshold
+CombineAsMode <- function(df, threshold) {
+  factor_columns <- unlist(lapply(df, is.factor))
+  df1 <- df[,factor_columns]
+  df1 <- data.frame(lapply(df1, as.character), stringsAsFactors = F)
+  for (i in 1:ncol(df1)) {
+    tbl <- table(df1[,i])
+    leave <- tbl[tbl < threshold]
+    df1[df1[[i]] %in% names(leave),i] <- names(tbl[tbl == max(tbl)])
+  }
+  df1 <- data.frame(lapply(df1, as.factor), stringsAsFactors = F)
+  df2 <- cbind(df[,!factor_columns], df1)
+  return(df2)
+}
+
+#create df with "other" first
+dfc <- CombineLowNum(df, 20)
+#then create df small groups of other and turn into the max of the 
+#variable if the group is smaller than 10
+dfd <- CombineAsMode(df, 10)
+
+
+#pull numeric variables
+numdf <- dfd[,unlist(lapply(dfd, is.numeric))]
+
+#pull train and test set back out
+test1 <- dfd[dfd$Id %in% test_ID,]
+train1 <- dfd[!dfd$Id %in% test_ID,]
+str(train1)
+#make sure variables are numeric
+train1$SalePrice <- as.numeric(train1$SalePrice)
+test1$SalePrice <- as.numeric(test1$SalePrice)
+train1$TotalBsmtSF <- as.numeric(train1$TotalBsmtSF)
+test1$TotalBsmtSF <- as.numeric(test1$TotalBsmtSF)
+
+#take out ID 
+train1 <- subset(train1, select = -Id)
+test1 <- subset(test1, select = -Id)
+
+#Format testing set
+test1$TotalBsmtSF[661]=0
+test1.var <- subset(test1, select = -SalePrice)
+
+#5-fold cv
+train.control <- trainControl(method="cv", number=5, savePredictions = TRUE)
+
+#linear model
+train1 <- data.frame(train1)
+L.model <- train(SalePrice ~., data=train1, method = 'lm')
+L.model
+
+
+#  RMSE       Rsquared   MAE      
+#0.2271761  0.7254743  0.1713987
+
+lgpred <- predict(L.model, test1, see.fit = FALSE)
+pred.lg <- exp(lgpred)
+
+finaldf <- data.frame(Id = test_ID, SalePrice = (pred.lg))
+
+#pcompts model
+pr.out <- prcomp(numdf, center = TRUE, scale = TRUE)
+PCAout <- data.frame(pr.out$rotation)
+View(PCAout)
+
+#PC1 has Sale price correlating with Overall Quality, Full bathrooms,
+#First floor square feet, total rooms abouve ground, and fireplace quality.
+#It has an inverse correlation with enclosed portches and overall condition.
+#This means these houses are probably newer, and made with better quality. 
+#
+
+
+#random forest model
+model.RFg <- train(SalePrice ~., data=train1, method="rf", 
+                   ntree = 20, importance=TRUE)
+trf <- tuneRF(train1,train1$SalePrice, stepFactor = .5, improve = 1e-5, ntreeTry = 501,trace=TRUE, plot = TRUE)
+trf
+model.RFg
+
+#  mtry  RMSE       Rsquared   MAE      
+#2    0.1876650  0.8153928  0.1304366
+#30    0.1561929  0.8498335  0.1061012
+#59    0.1632453  0.8341847  0.1118036
+
+RFpred <- predict(model.RFg, newdata = test1)
+pred.rf <- exp(RFpred)
+
+finaldf <- data.frame(Id = test_ID, SalePrice = (pred.rf))
+
+
+#RIDGE
+ridge.fit <- train(SalePrice ~., data=train1, method = "ridge", 
+                   trControl = train.control)
+ridge.fit
+
+#lambda  RMSE       Rsquared   MAE      
+#0e+00   0.1610704  0.8379444  0.1042793
+#1e-04   0.1610630  0.8379598  0.1042774
+#1e-01   0.1614268  0.8436006  0.1080652
+
+ridgeprd <- predict(ridge.fit, test1)
+
+#LASSO 
+set.seed(9)
+lasso.fit <- train(SalePrice~., data=train1, method = "lasso", 
+                   trControl = train.control)
+lasso.fit
+#fraction  RMSE       Rsquared   MAE      
+#0.1       0.3119601  0.6684533  0.2377931
+#0.5       0.1614147  0.8414119  0.1094622
+#0.9       0.1565120  0.8486985  0.1018324
+
+lassopred <- predict(lasso.fit, newdata = test1)
+pred.lasso <- exp(lassopred)
+
+finaldf <- data.frame(Id = test_ID, SalePrice = (pred.lasso))
+write.csv(finaldf, file = 'submissionlasso.csv', row.names = FALSE)
+
+
+#Bagging
+bag.model <- randomForest(SalePrice~., data=train1, mtry=29, ntree=100)
+bag.model
+
+# Type of random forest: regression
+#Number of trees: 100
+#No. of variables tried at each split: 29
+
+#Mean of squared residuals: 0.02166878
+#% Var explained: 86.41
+
+summary(bag.model)
+
+
+#Boost
+library(gbm)
+boost.fit<- gbm(SalePrice~., data = train1, distribution = "gaussian", n.trees= 1000, shrinkage = 0.01)
+boost.fit
+
+
+                          ## Conclusion ##
+#My best model was the Lasso model with a MAE of 0.1018324 followed closly 
+#by the ridge model which had an MAE of 0.1042774. 
+
